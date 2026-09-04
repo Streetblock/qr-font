@@ -936,6 +936,7 @@ def build_ttf(font_data: FontData, feature_text: str, output: Path) -> None:
         sTypoDescender=DESCENT,
         usWinAscent=ASCENT,
         usWinDescent=DESCENT,
+        ulCodePageRange1=0x00000001,
     )
     fb.setupNameTable(
         {
