@@ -85,10 +85,6 @@ def g_d(pos: int, bit: int) -> str:
     return f"d{pos:03d}_{bit}"
 
 
-def g_p(pos: int, bit: int) -> str:
-    return f"p{pos:02d}_{bit}"
-
-
 def g_c(pos: int) -> str:
     return f"c{pos:02d}"
 
@@ -472,7 +468,12 @@ def build_font_data(base_font_path: Path = DEFAULT_BASE_FONT) -> FontData:
         add_empty(g_len(n), data)
     for j in range(EC_CODEWORDS):
         for val in range(256):
-            add_empty(f"s{j}_{val:03d}", data)
+            name = f"s{j}_{val:03d}"
+            start = DATA_BITS + j * 8
+            bits = ((start + i, bit) for i, bit in enumerate(bits_of(val, 8)))
+            data.glyph_order.append(name)
+            data.glyphs[name] = bit_group_glyph(bits, coords)
+            data.advance_widths[name] = 0
     for pos in range(MAX_LEN):
         for code in SUPPORTED_CODES:
             name = g_byte(pos, code)
@@ -520,31 +521,6 @@ def build_font_data(base_font_path: Path = DEFAULT_BASE_FONT) -> FontData:
             data.glyph_order.append(name)
             data.glyphs[name] = square_glyph(row, col) if (bit ^ is_masked(row, col)) else empty_glyph()
             data.advance_widths[name] = 0
-    for i, (row, col) in enumerate(coords[DATA_BITS:]):
-        for bit in (0, 1):
-            name = g_p(i, bit)
-            data.glyph_order.append(name)
-            data.glyphs[name] = square_glyph(row, col) if (bit ^ is_masked(row, col)) else empty_glyph()
-            data.advance_widths[name] = 0
-
-    # Fused glyphs: p55_bit + qr_base_NN merged into one glyph.
-    # These are produced by the MergeAll ligature lookup.
-    last_parity_idx = PARITY_BITS - 1
-    last_row, last_col = coords[DATA_BITS + last_parity_idx]
-    for bit in (0, 1):
-        p55_draws = bool(bit ^ is_masked(last_row, last_col))
-        for length in range(MAX_LEN + 1):
-            name = f"qr_base_p55_{bit}_{length:02d}"
-            pen = TTGlyphPen(None)
-            for r, c in sorted(base_black_modules()):
-                draw_square(pen, r, c)
-            if p55_draws:
-                draw_square(pen, last_row, last_col)
-            data.glyph_order.append(name)
-            data.glyphs[name] = pen.glyph()
-            data.advance_widths[name] = ADVANCE
-
-
     return data
 
 
@@ -552,50 +528,16 @@ def class_line(name: str, members: Iterable[str]) -> str:
     return f"@{name} = [{' '.join(members)}];"
 
 
-def grouped_internal_glyphs(include_parity_circuit: bool = False) -> list[str]:
-    names = ["header_bits"]
-    for pos in range(MAX_LEN):
-        names.extend(g_byte(pos, code) for code in SUPPORTED_CODES)
-    for length in range(MAX_LEN + 1):
-        names.extend((f"count_{length:02d}", f"tail_{length:02d}"))
-        if not include_parity_circuit:
-            names.append(f"parity_zero_{length:02d}")
-    if include_parity_circuit:
-        for j in range(EC_CODEWORDS):
-            names.extend(f"s{j}_{val:03d}" for val in range(256))
-        for i in range(PARITY_BITS):
-            names.extend((g_p(i, 0), g_p(i, 1)))
-    return names
-
-
-def grouped_any_glyphs(include_parity_circuit: bool = False) -> list[str]:
-    names = grouped_internal_glyphs(include_parity_circuit)
-    names.extend(f"qr_base_{length:02d}" for length in range(MAX_LEN + 1))
-    return names
-
-
-def grouped_follow_glyphs(include_parity_circuit: bool = False) -> list[str]:
-    names = ["empty", *grouped_any_glyphs(include_parity_circuit)]
-    if include_parity_circuit:
-        for j in range(EC_CODEWORDS):
-            for val in range(256):
-                names.append(f"s{j}_{val:03d}")
-        for i in range(PARITY_BITS):
-            for bit in (0, 1):
-                names.append(g_p(i, bit))
-    return names
-
-
 def is_qr_render_glyph(name: str) -> bool:
     return (
         name == "header_bits"
         or name.startswith("byte_")
+        or (name.startswith("s") and name[1:2].isdigit())
         or name.startswith("count_")
         or name.startswith("tail_")
         or name.startswith("parity_zero_")
         or name.startswith("qr_base_")
         or name.startswith("d")
-        or name.startswith("p")
     )
 
 
@@ -677,9 +619,6 @@ def generate_features(include_parity_circuit: bool = False) -> str:
     for pos in range(MAX_LEN):
         all_lines.append(class_line(f"byte_{pos:02d}", (g_byte(pos, c) for c in SUPPORTED_CODES)))
     if include_parity_circuit:
-        # Define parity classes
-        for i in range(PARITY_BITS):
-            all_lines.append(class_line(f"p{i:02d}", (g_p(i, 0), g_p(i, 1))))
         # Define state classes and their XOR permutations
         for j in range(EC_CODEWORDS):
             all_lines.append(class_line(f"s{j}", (f"s{j}_{val:03d}" for val in range(256))))
@@ -691,7 +630,18 @@ def generate_features(include_parity_circuit: bool = False) -> str:
     all_lines.append("")
 
     # 2. Generate NoOp, XorS, and helper lookups
-    helper_lookups: list[str] = []
+    if include_parity_circuit:
+        open_replacement = "header_bits len_00 " + " ".join(
+            f"s{j}_000" for j in range(EC_CODEWORDS)
+        )
+    else:
+        open_replacement = "header_bits len_00"
+    helper_lookups: list[str] = [
+        "lookup ReplaceOpen useExtension {",
+        f"    sub open_delim by {open_replacement};",
+        "} ReplaceOpen;",
+        "",
+    ]
     if include_parity_circuit:
         # Generate NoOp lookup using class-to-class identity substitutions and useExtension
         helper_lookups.append("lookup NoOp useExtension {")
@@ -779,17 +729,16 @@ def generate_features(include_parity_circuit: bool = False) -> str:
     # 3. Main lookups (OpenQR, Scan{pos}, CloseQR)
     main_lines: list[str] = []
     
-    # OpenQR
-    if include_parity_circuit:
-        open_replacement = "header_bits len_00 " + " ".join(f"s{j}_000" for j in range(EC_CODEWORDS))
-    else:
-        open_replacement = "header_bits len_00"
-    main_lines.extend([
-        "lookup OpenQR useExtension {",
-        f"    sub open_delim by {open_replacement};",
-        "} OpenQR;",
-        "",
-    ])
+    # Delay QR expansion until a matching close delimiter is present. This
+    # keeps incomplete blocks visible in incremental editors such as Word.
+    main_lines.append("lookup OpenQR useExtension {")
+    for length in range(MAX_LEN + 1):
+        payload = " ".join("@SUPPORTED_CHARS" for _ in range(length))
+        lookahead = f"{payload} close_delim" if payload else "close_delim"
+        main_lines.append(
+            f"    sub open_delim' lookup ReplaceOpen {lookahead};"
+        )
+    main_lines.extend(["} OpenQR;", ""])
     feature_lookups: list[str] = ["OpenQR"]
 
     # Scan{pos}
@@ -876,33 +825,6 @@ def generate_features(include_parity_circuit: bool = False) -> str:
         main_lines.append("} CloseQR;")
         main_lines.append("")
         feature_lookups.append("CloseQR")
-
-    # Add ExpandState to main_lines and feature_lookups
-    if include_parity_circuit:
-        main_lines.append("lookup ExpandState useExtension {")
-        for j in range(EC_CODEWORDS):
-            for val in range(256):
-                bits = bits_of(val, 8)
-                target_glyphs = [g_p(j * 8 + b, bit) for b, bit in enumerate(bits)]
-                main_lines.append(f"    sub s{j}_{val:03d} by {' '.join(target_glyphs)};")
-        main_lines.append("} ExpandState;")
-        main_lines.append("")
-        feature_lookups.append("ExpandState")
-
-        # MergeAll
-        main_lines.append("lookup MergeAll {")
-        for bit in (0, 1):
-            for length in range(MAX_LEN + 1):
-                p55_name = g_p(PARITY_BITS - 1, bit)
-                fused_name = f"qr_base_p55_{bit}_{length:02d}"
-                main_lines.append(
-                    f"    sub {p55_name} qr_base_{length:02d} by {fused_name};"
-                )
-        main_lines.append("} MergeAll;")
-        main_lines.append("")
-        feature_lookups.append("MergeAll")
-
-
 
     # Add main lines to all_lines
     all_lines.extend(main_lines)

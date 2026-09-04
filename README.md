@@ -55,6 +55,14 @@ Use a different compatible TrueType source with:
 uv run tools/build_font.py --base-font /path/to/BaseFont-Regular.ttf
 ```
 
+### Compact glyph stream
+
+Each Reed-Solomon state glyph draws all eight modules of its parity byte. This
+keeps the shaped output small enough for applications such as Microsoft Word
+without changing the QR payload, mask, or full 7/10/15-byte error correction.
+QR expansion also waits for the closing `]`, so incomplete input such as
+`[hello` remains readable while it is being typed.
+
 To try the full generated Reed-Solomon circuit:
 
 ```sh
