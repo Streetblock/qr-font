@@ -254,7 +254,7 @@ Automatic mask selection is possible using more unrolled Boolean circuitry, but 
 
 ### Firefox Subpixel Alignment
 In layout engines (particularly Gecko/Firefox), zero-advance glyphs classified as GDEF Marks undergo subpixel rounding and snapping relative to their nearest Base glyph. If a font mixes Base glyphs (e.g., data bits with positive `hmtx` advance kerned back via GPOS) and Mark glyphs (e.g., parity bits with zero `hmtx` advance), the subpixel rounding logic causes the Mark sections to drift horizontally from the Base sections as the font size changes.
-* **Solution:** We omit the GDEF table and configure all intermediate QR glyphs (`header_bits`, `byte_XX`, `pXX`, `sXX`) to have native `0` advance in the `hmtx` table. The closing base glyph (`qr_base_NN` or `qr_base_p55_NN`) is the only glyph with a positive `ADVANCE` width. Because there are no GPOS positioning adjustments, the browser treats them all as zero-advance Base glyphs, eliminating horizontal misalignment entirely.
+* **Solution:** Visible QR layers are never classified as GDEF Marks. All intermediate layers have native `0` advance in `hmtx`, and the closing base glyph is the only glyph with a positive `ADVANCE` width. Rendered data-byte glyphs use the GDEF Ligature class only as a filtering category: `IgnoreLigatures` lets subsequent state transitions skip accumulated data layers while avoiding mark attachment and mark-rounding behavior. This also keeps contextual rules below shaper context limits at the full 17/32/53-character capacities.
 
 ### Line-Breaking Limitations
 Web browsers execute line-breaking algorithms (such as Unicode UAX #14) on the raw Unicode character sequence *before* invoking the font shaper (HarfBuzz).

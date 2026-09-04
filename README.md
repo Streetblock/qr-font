@@ -61,7 +61,9 @@ Each Reed-Solomon state glyph draws all eight modules of its parity byte. This
 keeps the shaped output small enough for applications such as Microsoft Word
 without changing the QR payload, mask, or full 7/10/15-byte error correction.
 QR expansion also waits for the closing `]`, so incomplete input such as
-`[hello` remains readable while it is being typed.
+`[hello` remains readable while it is being typed. Rendered data-byte glyphs
+use the GDEF ligature class so later lookups can skip them without growing the
+matched context; this preserves the full 17/32/53-character capacities.
 
 To try the full generated Reed-Solomon circuit:
 
@@ -82,6 +84,12 @@ To inspect the shaped glyph stream:
 
 ```sh
 uv run tools/shape_debug.py '[a]' '[b]'
+```
+
+To verify every supported payload length, including exact Reed-Solomon state:
+
+```sh
+uv run tools/test_capacity.py --all
 ```
 
 Outputs:

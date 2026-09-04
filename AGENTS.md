@@ -69,6 +69,10 @@ Use `--base-font` to test another compatible TrueType base font.
   better than grid-fitting.
 - The current `gasp` table intentionally avoids grid-fit flags and uses
   grayscale/symmetric smoothing only.
+- Rendered `byte_XX` glyphs are classified as GDEF Ligatures solely so the
+  state-machine lookups can skip them with `IgnoreLigatures`. Do not classify
+  visible QR layers as GDEF Marks: that previously caused Firefox alignment
+  drift.
 
 ## Verification
 
@@ -76,6 +80,12 @@ Lightweight checks:
 
 ```sh
 uv run tools/shape_debug.py 'Hello [QR coded] world!' 'Download this font: [http://qr.jim.sh/]'
+```
+
+Full capacity and Reed-Solomon state checks:
+
+```sh
+uv run tools/test_capacity.py --all
 ```
 
 For QR matrix correctness, compare `matrix_for_text()` against an independent
@@ -96,7 +106,7 @@ We build three separate font families (`1-L`, `2-L`, `3-L`), each fixed to its r
 ### Firefox Alignment Issue
 - **Symptom:** Horizontal shifting/slicing between the top/bottom (parity) and middle (data) sections of the QR code when resizing the font in Firefox.
 - **Cause:** Parity/state glyphs were classified as GDEF Marks and had zero-advance in `hmtx`. Firefox applies subpixel snapping/rounding to zero-advance GDEF Marks differently from standard spacing Base glyphs, causing horizontal coordinate drift.
-- **Solution:** We omit the GDEF table and configure all intermediate QR-related glyphs (`header_bits`, `byte_XX`, `pXX`, `sXX`) to have native `0` advance in the `hmtx` table. The closing base glyph (`qr_base_NN` or `qr_base_p55_NN`) is the only glyph with a positive `ADVANCE` width. Because there are no GPOS positioning adjustments, the browser treats them all as zero-advance Base glyphs, eliminating horizontal misalignment entirely.
+- **Solution:** No visible QR layer is classified as a GDEF Mark. Intermediate QR glyphs have native `0` advance in `hmtx`, and the closing base glyph is the only glyph with a positive `ADVANCE` width. The generated GDEF table classifies only rendered data-byte glyphs as Ligatures, allowing state lookups to skip them without invoking mark positioning or rounding behavior.
 
 ### Line-Breaking Limitations
 - **Symptom:** QR codes containing spaces, dots, or slashes split across lines. In Chrome, the second half of the split QR code renders as plain text (e.g., `coded]`). In Firefox, it splits the shaped QR code.

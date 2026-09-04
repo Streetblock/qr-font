@@ -618,6 +618,12 @@ def generate_features(include_parity_circuit: bool = False) -> str:
     # 1. Define classes first!
     for pos in range(MAX_LEN):
         all_lines.append(class_line(f"byte_{pos:02d}", (g_byte(pos, c) for c in SUPPORTED_CODES)))
+    all_lines.append(
+        class_line(
+            "QR_DATA_GLYPHS",
+            (g_byte(pos, code) for pos in range(MAX_LEN) for code in SUPPORTED_CODES),
+        )
+    )
     if include_parity_circuit:
         # Define state classes and their XOR permutations
         for j in range(EC_CODEWORDS):
@@ -628,6 +634,16 @@ def generate_features(include_parity_circuit: bool = False) -> str:
             
     all_lines.append(class_line("SUPPORTED_CHARS", (g_char(c) for c in SUPPORTED_CODES)))
     all_lines.append("")
+    # Rendered data-byte glyphs stay in the glyph stream, but later state
+    # transitions must be able to skip over them. Classifying them as GDEF
+    # ligatures lets IgnoreLigatures do that without the positioning side
+    # effects that GDEF mark glyphs can have in browser renderers.
+    all_lines.extend([
+        "table GDEF {",
+        "    GlyphClassDef , @QR_DATA_GLYPHS, , ;",
+        "} GDEF;",
+        "",
+    ])
 
     # 2. Generate NoOp, XorS, and helper lookups
     if include_parity_circuit:
@@ -747,6 +763,7 @@ def generate_features(include_parity_circuit: bool = False) -> str:
         for pos in range(MAX_LEN):
             scan_name = f"Scan{pos:02d}"
             main_lines.append(f"lookup {scan_name} useExtension {{")
+            main_lines.append("    lookupflag IgnoreLigatures;")
             for code in SUPPORTED_CODES:
                 bit_contrib = parity_contribution_for_byte(pos, code, matrix)
                 byte_contrib = bytes_from_bits(bit_contrib)
@@ -768,8 +785,6 @@ def generate_features(include_parity_circuit: bool = False) -> str:
                             rule_parts.append(f"@s{j}' lookup Xor_{contrib:03d}")
                         else:
                             rule_parts.append(f"@s{j}' lookup NoOp")
-                    for k in range(1, pos):
-                        rule_parts.append(f"@byte_{k:02d}' lookup NoOp")
                     rule_parts.append(f"len_{pos:02d}' lookup SetByte_{code:03d}")
                     rule_parts.append(f"{g_char(code)}' lookup SetLen{pos + 1:02d}")
                     
@@ -793,24 +808,36 @@ def generate_features(include_parity_circuit: bool = False) -> str:
     if include_parity_circuit:
         matrix = derive_parity_matrix()
         main_lines.append("lookup CloseQR useExtension {")
+        main_lines.append("    lookupflag IgnoreLigatures;")
         for length in range(MAX_LEN + 1):
             bit_fixed = fixed_parity_contribution(length, matrix)
             byte_fixed = bytes_from_bits(bit_fixed)
-            rule_parts = []
+            # With no payload, len_00 still precedes the parity states. Once
+            # the first byte is scanned, the length glyph follows them.
+            rule_parts = ["len_00"] if length == 0 else []
             for j in range(EC_CODEWORDS):
                 contrib = byte_fixed[j]
                 if contrib:
                     rule_parts.append(f"@s{j}' lookup Xor_{contrib:03d}")
                 else:
                     rule_parts.append(f"@s{j}' lookup NoOp")
-            for k in range(1, length):
-                rule_parts.append(f"@byte_{k:02d}' lookup NoOp")
-            rule_parts.append(f"len_{length:02d}' lookup NoOp")
+            if length:
+                rule_parts.append(f"len_{length:02d}' lookup NoOp")
             rule_parts.append(f"close_delim' lookup SetBase_{length:02d}")
             main_lines.append(f"    sub {' '.join(rule_parts)};")
         main_lines.append("} CloseQR;")
         main_lines.append("")
         feature_lookups.append("CloseQR")
+
+        main_lines.append("lookup CloseQR_CountTailEmpty useExtension {")
+        empty_lookahead = " ".join(f"@s{j}" for j in range(EC_CODEWORDS))
+        main_lines.append(
+            "    sub len_00' lookup SetCountTail_00 "
+            f"{empty_lookahead} qr_base_00;"
+        )
+        main_lines.append("} CloseQR_CountTailEmpty;")
+        main_lines.append("")
+        feature_lookups.append("CloseQR_CountTailEmpty")
 
         main_lines.append("lookup CloseQR_CountTail useExtension {")
         for length in range(MAX_LEN + 1):
